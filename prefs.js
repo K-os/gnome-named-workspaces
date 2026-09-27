@@ -129,13 +129,14 @@ export default class WorkspaceNamePreferences extends ExtensionPreferences {
         // Bold
         const boldRow = new Adw.SwitchRow({
             title: 'Bold',
-            active: globalStyle['font-weight'] === 'bold',
+            // The extension defaults to bold, so only an explicit 'normal' is off
+            active: globalStyle['font-weight'] !== 'normal',
         });
         boldRow.connect('notify::active', () => {
             if (boldRow.active)
-                globalStyle['font-weight'] = 'bold';
-            else
                 delete globalStyle['font-weight'];
+            else
+                globalStyle['font-weight'] = 'normal';
             saveStyle();
         });
         group.add(boldRow);

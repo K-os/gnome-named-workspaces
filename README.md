@@ -15,7 +15,7 @@ A GNOME Shell extension that displays the current workspace name in the top pane
 
 ## Supported GNOME Versions
 
-45, 46, 47, 48, 49
+45-51
 
 ## Installation
 
@@ -48,4 +48,12 @@ gnome-extensions enable named-workspaces@a31.at
 glib-compile-schemas schemas/
 gnome-extensions pack --force --extra-source=stylesheet.css --extra-source=LICENSE
 mv named-workspaces@a31.at.shell-extension.zip named-workspaces@a31.at.zip
+```
+
+## Testing
+
+```bash
+# install
+# sudo dnf install mutter-devkit
+dbus-run-session gnome-shell --devkit --wayland
 ```

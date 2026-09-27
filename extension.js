@@ -1,9 +1,10 @@
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -17,6 +18,10 @@ const WorkspaceNameIndicator = GObject.registerClass(
 class WorkspaceNameIndicator extends PanelMenu.Button {
     _init(extension) {
         super._init(0.0, 'Workspace Name Indicator');
+
+        // GNOME 50+: the built-in click gesture toggles the menu on press,
+        // swallowing the second click before vfunc_event can detect a double-click
+        this._clickGesture?.set_enabled(false);
 
         this._settings = extension._settings;
         this._editing = false;
@@ -319,13 +324,8 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
                 this._settings.set_string('global-style', '');
             }
 
-            this._bgEntry.set_text('');
-            this._colorEntry.set_text('');
-            this._boldActive = false;
-            this._boldBtn.remove_style_class_name('wn-btn-active');
-            this._italicActive = false;
-            this._italicBtn.remove_style_class_name('wn-btn-active');
-            this._setFontSize('');
+            // Show inherited values so the commit on close saves no overrides
+            this._populateStyleFields();
             this._updateLabel();
         });
 
@@ -442,6 +442,9 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
         if (!ws)
             return;
 
+        // Save pending menu edits while indices still match
+        this._commitMenuChanges();
+
         // Reorder the actual GNOME workspace
         wm.reorder_workspace(ws, toIndex);
 
@@ -489,15 +492,25 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
         this._label.set_style(this._styleToCss(style) || null);
     }
 
+    // Returns the fields that differ from what the current scope inherits, plus
+    // unchanged existing overrides, so other values keep following lower layers
     _buildStyleFromFields() {
-        const style = {};
+        const fields = {
+            'font-weight': this._boldActive ? 'bold' : 'normal',
+            'font-style': this._italicActive ? 'italic' : 'normal',
+        };
         const bg = this._bgEntry.get_text().trim();
-        if (bg) style['background-color'] = bg;
+        if (bg) fields['background-color'] = bg;
         const color = this._colorEntry.get_text().trim();
-        if (color) style['color'] = color;
-        style['font-weight'] = this._boldActive ? 'bold' : 'normal';
-        if (this._italicActive) style['font-style'] = 'italic';
-        if (this._fontSize) style['font-size'] = this._fontSize;
+        if (color) fields['color'] = color;
+        if (this._fontSize) fields['font-size'] = this._fontSize;
+
+        const inherited = this._getInheritedStyle(this._styleScope);
+        const style = {};
+        for (const [key, value] of Object.entries(fields)) {
+            if (value !== (inherited[key] ?? 'normal') || this._ownStyle?.[key] === value)
+                style[key] = value;
+        }
         return style;
     }
 
@@ -537,19 +550,19 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
     }
 
     _populateStyleFields() {
-        let style = {};
-        if (this._styleScope === 'workspace') {
-            const index = this._getMenuIndex();
-            const styles = this._settings.get_strv('workspace-styles');
-            if (index < styles.length && styles[index]) {
-                try { style = JSON.parse(styles[index]); } catch (e) {}
-            }
-        } else {
-            const globalRaw = this._settings.get_string('global-style');
-            if (globalRaw) {
-                try { style = JSON.parse(globalRaw); } catch (e) {}
-            }
+        // Remember the scope's own overrides so saving keeps them
+        let raw;
+        if (this._styleScope === 'workspace')
+            raw = this._settings.get_strv('workspace-styles')[this._getMenuIndex()];
+        else
+            raw = this._settings.get_string('global-style');
+        this._ownStyle = {};
+        if (raw) {
+            try { this._ownStyle = JSON.parse(raw); } catch (e) {}
         }
+
+        // Show effective values for the scope: inherited layers + own overrides
+        const style = {...this._getInheritedStyle(this._styleScope), ...this._ownStyle};
 
         this._bgEntry.set_text(style['background-color'] || '');
         this._colorEntry.set_text(style['color'] || '');
@@ -570,12 +583,18 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
     }
 
     _saveNameFromMenu() {
-        const newName = this._menuNameEntry.get_text().trim();
-        const index = this._getMenuIndex();
+        this._setWorkspaceName(this._getMenuIndex(), this._menuNameEntry.get_text());
+    }
+
+    _setWorkspaceName(index, name) {
+        name = name.trim();
+        // Don't persist the default label; it would go stale when workspaces shift
+        if (name === this._getDefaultName(index))
+            name = '';
         const names = this._settings.get_strv('workspace-names');
         while (names.length <= index)
             names.push('');
-        names[index] = newName;
+        names[index] = name;
         this._settings.set_strv('workspace-names', names);
     }
 
@@ -601,24 +620,27 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
         this._updateLabel();
     }
 
-    _getEffectiveStyle(index, overrideScope = null, overrideStyle = null) {
-        let style = {};
-
-        // Base defaults (lowest priority)
-        style['font-weight'] = 'bold';
+    // Style a scope inherits: base defaults, plus the global style for 'workspace'
+    _getInheritedStyle(scope) {
+        const style = {'font-weight': 'bold'};
         const baseFontSize = this._settings.get_int('font-size');
         if (baseFontSize > 0)
             style['font-size'] = `${baseFontSize}px`;
 
-        // Global style overrides base
-        if (overrideScope === 'global') {
-            Object.assign(style, overrideStyle);
-        } else {
+        if (scope === 'workspace') {
             const globalRaw = this._settings.get_string('global-style');
             if (globalRaw) {
                 try { Object.assign(style, JSON.parse(globalRaw)); } catch (e) {}
             }
         }
+        return style;
+    }
+
+    _getEffectiveStyle(index, overrideScope = null, overrideStyle = null) {
+        // Base defaults, then global style (live override while editing global)
+        const style = this._getInheritedStyle(overrideScope === 'global' ? 'global' : 'workspace');
+        if (overrideScope === 'global')
+            Object.assign(style, overrideStyle);
 
         // Per-workspace style overrides global
         if (overrideScope === 'workspace') {
@@ -708,6 +730,16 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
         }
     }
 
+    _insertWorkspaceData(index) {
+        for (const key of ['workspace-names', 'workspace-styles']) {
+            const arr = this._settings.get_strv(key);
+            if (index < arr.length) {
+                arr.splice(index, 0, '');
+                this._settings.set_strv(key, arr);
+            }
+        }
+    }
+
     _getMenuIndex() {
         return this._menuWorkspaceIndex ?? global.workspace_manager.get_active_workspace_index();
     }
@@ -716,6 +748,10 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
         const names = this._settings.get_strv('workspace-names');
         if (index < names.length && names[index] !== '')
             return names[index];
+        return this._getDefaultName(index);
+    }
+
+    _getDefaultName(index) {
         return `Workspace ${index + 1}`;
     }
 
@@ -751,14 +787,9 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
             return;
 
         this._editing = false;
-        const newName = this._entry.get_text().trim();
-        const index = global.workspace_manager.get_active_workspace_index();
-
-        const names = this._settings.get_strv('workspace-names');
-        while (names.length <= index)
-            names.push('');
-        names[index] = newName;
-        this._settings.set_strv('workspace-names', names);
+        this._setWorkspaceName(
+            global.workspace_manager.get_active_workspace_index(),
+            this._entry.get_text());
 
         this._entry.hide();
         this._label.show();
@@ -803,6 +834,16 @@ export default class WorkspaceNameExtension extends Extension {
         this._settings.connectObject('changed::panel-position', () => {
             this._repositionIndicator();
         }, this);
+
+        // insertWorkspace appends a workspace and shifts windows right instead of
+        // inserting one, so no signal tells us to shift names; hook it directly.
+        const indicator = this._indicator;
+        this._injectionManager = new InjectionManager();
+        this._injectionManager.overrideMethod(Main.wm, 'insertWorkspace', original => function (pos) {
+            if (Meta.prefs_get_dynamic_workspaces())
+                indicator._insertWorkspaceData(pos);
+            return original.call(this, pos);
+        });
     }
 
     _repositionIndicator() {
@@ -831,6 +872,8 @@ export default class WorkspaceNameExtension extends Extension {
     }
 
     disable() {
+        this._injectionManager?.clear();
+        this._injectionManager = null;
         this._settings.disconnectObject(this);
         this._indicator?.destroy();
         this._indicator = null;
