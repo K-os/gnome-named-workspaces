@@ -383,7 +383,7 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
             box.add_child(dot);
 
             const label = new St.Label({
-                text: this._getWorkspaceName(i),
+                text: this._getWorkspaceName(i) || '<unnamed workspace>',
                 y_align: Clutter.ActorAlign.CENTER,
                 x_expand: true,
             });
