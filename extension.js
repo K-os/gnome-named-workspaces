@@ -713,6 +713,9 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
             'changed::font-size', () => {
                 this._updateLabel();
             },
+            'changed::default-name-template', () => {
+                this._updateLabel();
+            },
             this);
     }
 
@@ -752,7 +755,8 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
     }
 
     _getDefaultName(index) {
-        return `Workspace ${index + 1}`;
+        return this._settings.get_string('default-name-template')
+            .replaceAll('{n}', index + 1);
     }
 
     _updateLabel() {
