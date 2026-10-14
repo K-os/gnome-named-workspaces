@@ -333,6 +333,15 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
             if (isOpen) {
                 this._buildWorkspaceList();
                 this._populateMenu();
+                // Focus only settles after the menu is mapped, hence the idle
+                this._focusIdle = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                    this._focusIdle = 0;
+                    if (this.menu.isOpen) {
+                        this._menuNameEntry.grab_key_focus();
+                        this._menuNameEntry.get_clutter_text().set_selection(0, -1);
+                    }
+                    return GLib.SOURCE_REMOVE;
+                });
             } else {
                 this._commitMenuChanges();
             }
@@ -816,6 +825,10 @@ class WorkspaceNameIndicator extends PanelMenu.Button {
         if (this._pendingClickTimeout) {
             GLib.source_remove(this._pendingClickTimeout);
             this._pendingClickTimeout = 0;
+        }
+        if (this._focusIdle) {
+            GLib.source_remove(this._focusIdle);
+            this._focusIdle = 0;
         }
         this._disconnectSignals();
         super.destroy();
